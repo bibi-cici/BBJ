@@ -63,7 +63,7 @@ class StockMarketEast(StockMarketTemplate):
         df = pd.DataFrame(data=data, columns=["trade_date", "open", "close", "high", "low", "volume", "amount",
                                               '', "change_pct", "change", "turnover_ratio"])
         # 4.清洗数据
-        df['pre_close'] = df['close'].astype(float) - df['change'].astype(float)
+        df['pre_close'] = df['close'] - df['change']
         df['pre_close'] = df['pre_close'].round(2)
         df['volume'] = df['volume'].astype(int) * 100
         df['trade_time'] = pd.to_datetime(df['trade_date']).dt.strftime('%Y-%m-%d %H:%M:%S')
