@@ -10,6 +10,7 @@
 
 import threading
 import time
+from urllib.parse import urlparse
 
 import requests
 
@@ -41,10 +42,91 @@ class SunProxy(object):
             del cls._data[key]
 
 
+class RateLimiter(object):
+    """
+    频率限制器，控制每个域名的请求频率
+    """
+    _instance_lock = threading.Lock()
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if not hasattr(RateLimiter, "_instance"):
+            with RateLimiter._instance_lock:
+                if not hasattr(RateLimiter, "_instance"):
+                    RateLimiter._instance = object.__new__(cls)
+        return RateLimiter._instance
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.default_limit = 30
+        self.domain_limits = {}
+        self.request_records = {}
+
+    def set_default_limit(self, limit):
+        """
+        设置默认的请求频率限制
+        :param limit: 每分钟的请求次数
+        """
+        with self.lock:
+            self.default_limit = limit
+
+    def set_domain_limit(self, domain, limit):
+        """
+        设置特定域名的请求频率限制
+        :param domain: 域名
+        :param limit: 每分钟的请求次数
+        """
+        with self.lock:
+            self.domain_limits[domain] = limit
+
+    def _get_domain(self, url):
+        """
+        从URL中提取域名
+        """
+        parsed = urlparse(url)
+        return parsed.netloc
+
+    def _clean_old_records(self, domain, current_time):
+        """
+        清理超过1分钟的请求记录
+        """
+        if domain not in self.request_records:
+            return
+        cutoff_time = current_time - 60
+        self.request_records[domain] = [t for t in self.request_records[domain] if t > cutoff_time]
+
+    def acquire(self, url):
+        """
+        获取请求权限，如果超过频率限制则等待
+        :param url: 请求的URL
+        """
+        domain = self._get_domain(url)
+        current_time = time.time()
+
+        with self.lock:
+            self._clean_old_records(domain, current_time)
+            
+            if domain not in self.request_records:
+                self.request_records[domain] = []
+            
+            limit = self.domain_limits.get(domain, self.default_limit)
+            
+            while len(self.request_records[domain]) >= limit:
+                oldest_time = min(self.request_records[domain])
+                wait_time = oldest_time + 60 - current_time
+                if wait_time > 0:
+                    time.sleep(wait_time)
+                current_time = time.time()
+                self._clean_old_records(domain, current_time)
+            
+            self.request_records[domain].append(current_time)
+
+
 class SunRequests(object):
     def __init__(self, sun_proxy: SunProxy = None) -> None:
         super().__init__()
         self.sun_proxy = sun_proxy
+        self.rate_limiter = RateLimiter()
 
     def request(self, method='get', url=None, times=3, retry_wait_time=1588, proxies=None, wait_time=None, **kwargs):
         """
@@ -58,6 +140,9 @@ class SunRequests(object):
         :param kwargs: 其它 requests 参数，用法相同
         :return: res
         """
+        if url:
+            self.rate_limiter.acquire(url)
+        
         # 1. 获取设置代理
         proxies = self.__get_proxies(proxies)
         # 2. 请求数据结果
@@ -88,6 +173,21 @@ class SunRequests(object):
         if is_proxy and ip:
             proxies = {'https': f"http://{ip}", 'http': f"http://{ip}"}
         return proxies
+
+    def set_rate_limit(self, limit):
+        """
+        设置默认的频率限制
+        :param limit: 每分钟的请求次数
+        """
+        self.rate_limiter.set_default_limit(limit)
+
+    def set_domain_rate_limit(self, domain, limit):
+        """
+        设置特定域名的频率限制
+        :param domain: 域名
+        :param limit: 每分钟的请求次数
+        """
+        self.rate_limiter.set_domain_limit(domain, limit)
 
 
 sun_requests = SunRequests()
